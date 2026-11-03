@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>박스 실시간 3D 뷰어</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; font: 13px/1.4 -apple-system, "Apple SD Gothic Neo", sans-serif; background: #1e1e22; color: #ddd; }
+  #side { width: 300px; padding: 14px; overflow-y: auto; background: #2a2a2f; border-right: 1px solid #111; flex-shrink: 0; }
+  #main { flex: 1; position: relative; min-width: 0; }
+  #view { position: absolute; inset: 0; }
+  canvas#gl { display: block; width: 100%; height: 100%; }
+  h1 { font-size: 14px; margin: 0 0 10px; color: #fff; }
+  h2 { font-size: 12px; margin: 16px 0 6px; color: #9a9aff; font-weight: 600; }
+  button { font: inherit; padding: 7px 10px; border: 0; border-radius: 6px; background: #5b4fe0; color: #fff; cursor: pointer; }
+  button.sub { background: #44444c; }
+  button:hover { filter: brightness(1.15); }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 84px; gap: 5px 8px; align-items: center; }
+  input[type=number], select { width: 100%; padding: 4px 6px; border-radius: 5px; border: 1px solid #55555e; background: #1b1b1f; color: #eee; font: inherit; }
+  #status { font-size: 12px; color: #8fd6a0; margin: 8px 0; min-height: 17px; }
+  #warn { font-size: 12px; color: #ffb066; margin-top: 6px; min-height: 17px; }
+  #ov { width: 100%; border: 1px solid #55555e; border-radius: 6px; background: #fff; display: block; cursor: crosshair; }
+  .hint { color: #888; font-size: 11px; margin-top: 4px; }
+  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(91,79,224,.35); font-size: 20px; color: #fff; pointer-events: none; }
+  label.chk { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  #layers label.chk { margin-top: 3px; word-break: break-all; }
+  #thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+  .th { position: relative; cursor: pointer; border: 2px solid transparent; border-radius: 4px; }
+  .th.on { border-color: #7a6cff; }
+  .th canvas { display: block; width: 62px; height: auto; background: #fff; }
+  .th span { position: absolute; left: 3px; top: 1px; font-size: 10px; color: #333; background: rgba(255,255,255,.85); padding: 0 3px; border-radius: 3px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="side">
+  <h1>📦 박스 3D 뷰어</h1>
+  <div class="row">
+    <button id="pickAi">AI 파일 연결</button>
+    <button id="snap" class="sub">PNG 저장</button>
+    <button id="pick" class="sub">PNG 폴더 연결</button>
+  </div>
+  <div id="status">AI 파일을 연결하면, 일러스트에서 저장(Cmd+S)할 때 자동으로 갱신돼요.</div>
+  <div id="ab" class="hint" style="color:#cfcfff;font-size:12px;margin:-2px 0 4px">아트보드: 아직 없음</div>
+  <div id="thumbs" title="클릭하면 그 아트보드가 3D로 떠요"></div>
+
+  <h2>규격</h2>
+  <div class="grid" id="nums"></div>
+
+  <h2>전개도 배치</h2>
+  <div class="grid" id="sels"></div>
+  <label class="chk"><input type="checkbox" id="shared"> 모든 아트보드에 같은 설정 쓰기</label>
+  <div class="hint">아트보드 크기와 칼선 위치가 같으면 켜두세요. 하나만 맞추면 나머지도 그대로 적용돼요.</div>
+  <div id="warn"></div>
+
+  <h2>전개도 확인 (면 위치)</h2>
+  <canvas id="ov" width="280" height="180"></canvas>
+  <div class="hint">색 박스가 각 면에 입혀지는 영역이에요. <b>그림에서 몸통 첫 패널(A)의 왼쪽 위 모서리를 클릭</b>하면 본체 시작 X/Y가 자동으로 지정돼요. 풀칠 날개는 빼고, 뚜껑 날개 아래 몸통 윗변 기준이에요. (이 그림에는 칼선이 보이고, 3D에서는 숨겨져요)</div>
+
+  <h2>칼선 · 숨길 레이어</h2>
+  <div id="layers"><div class="hint">AI 파일을 연결하면 레이어 목록이 나와요. 체크한 레이어는 3D에서 숨겨요.</div></div>
+
+  <h2>보기</h2>
+  <div class="row">
+    <button class="sub" data-view="iso">기본</button>
+    <button class="sub" data-view="front">정면</button>
+    <button class="sub" data-view="side">측면</button>
+    <button class="sub" data-view="top">위</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="transp"> 저장할 때 배경 투명</label>
+  <div class="hint">.ai 파일이나 PNG를 창에 끌어다 놓아도 한 번 반영돼요 (자동 갱신은 아님).</div>
+</div>
+
+<div id="main">
+  <div id="view"><canvas id="gl"></canvas></div>
+  <div id="drop">여기에 PNG를 놓으세요</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const LS_KEY = 'boxviewer.v2';
+
+// ───────── 설정 (아트보드 이름별로 따로 저장) ─────────
+const DEF = { W: 60, H: 100, D: 30, X0: 15, Y0: 30, pxmm: 5.669, round: 1.5, inset: 0.4,
+              front: 2, firstWide: 1, topAt: 0, topRot: 0, botAt: 2, botRot: 0, transp: 0 };
+let STORE = { ab: {}, last: '(기본)' };
+try { Object.assign(STORE, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); } catch (e) {}
+if (!STORE.ab) STORE.ab = {};
+if (STORE.shared === undefined) STORE.shared = true;   // 기본: 모든 아트보드가 같은 규격·배치 설정을 씀
+let curAb = STORE.last || '(기본)';
+let S = { ...DEF, ...(STORE.ab[curAb] || {}) };
+S.pxmm = DEF.pxmm;   // 이미지 1mm당 픽셀 수: AI 읽기(2배)·PNG 내보내기(200%) 모두 5.669로 고정
+const save = () => {
+  try { STORE.ab[curAb] = { ...S }; STORE.last = curAb; localStorage.setItem(LS_KEY, JSON.stringify(STORE)); } catch (e) {}
+};
+
+const ABCD = [['A', 0], ['B', 1], ['C', 2], ['D', 3]];
+const ROT = [['0°', 0], ['90°', 1], ['180°', 2], ['270°', 3]];
+const NUMS = [['W', '가로 W (mm)'], ['H', '높이 H (mm)'], ['D', '깊이 D (mm)'],
+              ['X0', '본체 시작 X (mm)'], ['Y0', '본체 윗선 Y (mm)'],
+              ['round', '모서리 둥글기 (mm)'], ['inset', '가장자리 안쪽 자르기 (mm)']];
+const ZERO_OK = ['X0', 'Y0', 'round', 'inset'];   // 0(또는 음수)을 넣어도 되는 칸
+const SELS = [['front', '정면으로 쓸 패널', ABCD],
+              ['firstWide', '첫 패널(A)의 폭', [['넓은 면 W', 1], ['좁은 면 D', 0]]],
+              ['topAt', '윗면이 붙은 패널', ABCD], ['topRot', '윗면 추가 회전', ROT],
+              ['botAt', '아랫면이 붙은 패널', ABCD], ['botRot', '아랫면 추가 회전', ROT]];
+
+$('nums').innerHTML = NUMS.map(([k, l]) =>
+  `<label for="n_${k}">${l}</label><input type="number" id="n_${k}" step="any" value="${S[k]}">`).join('');
+$('sels').innerHTML = SELS.map(([k, l, opts]) =>
+  `<label for="s_${k}">${l}</label><select id="s_${k}">${opts.map(([t, v]) =>
+    `<option value="${v}" ${S[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`).join('');
+$('transp').checked = !!S.transp;
+
+// 입력칸을 현재 설정(S)에 맞게 다시 채움
+function syncInputs() {
+  NUMS.forEach(([k]) => { $('n_' + k).value = S[k]; });
+  SELS.forEach(([k]) => { $('s_' + k).value = String(S[k]); });
+  $('transp').checked = !!S.transp;
+  $('shared').checked = !!STORE.shared;
+  $('ab').textContent = '아트보드: ' + (curAb === '(기본)' ? '아직 없음' : curAb);
+}
+
+// 아트보드가 바뀌면 그 아트보드의 저장된 설정으로 전환 (처음 보는 아트보드는 직전 설정을 복사해서 시작)
+function switchArtboard(name) {
+  if (!name || name === curAb) return;
+  save();
+  const prev = S;
+  curAb = name;
+  S = { ...DEF, ...(STORE.ab[name] || prev) };
+  S.pxmm = DEF.pxmm;
+  save();
+  syncInputs();
+  applyBg();
+}
+
+NUMS.forEach(([k]) => $('n_' + k).addEventListener('input', e => {
+  const v = parseFloat(e.target.value); if (!(v > 0) && !ZERO_OK.includes(k)) return;
+  S[k] = isNaN(v) ? 0 : v; save(); rebuild(); }));
+SELS.forEach(([k]) => $('s_' + k).addEventListener('change', e => {
+  S[k] = Number(e.target.value); save(); rebuild(); }));
+$('transp').addEventListener('change', e => { S.transp = e.target.checked ? 1 : 0; save(); applyBg(); });
+$('shared').addEventListener('change', async e => {
+  STORE.shared = e.target.checked; save();
+  if (aiDoc) { try { await showAiPage(); } catch (err) { /* 무시 */ } }   // 현재 아트보드 기준으로 설정을 다시 연결
+  else syncInputs();
+});
+
+// ───────── 레이아웃 계산 (전개도 → 면) ─────────
+const FACE_NAMES = ['앞', '오른쪽', '뒤', '왼쪽', '윗면', '아랫면'];
+const FACE_COLORS = ['#ff4d4d', '#33b86a', '#3d8bff', '#ffb100', '#c04dff', '#00bcd4'];
+
+function computeLayout() {
+  const { W, H, D, X0, Y0, pxmm, front, firstWide, topAt, topRot, botAt, botRot } = S;
+  const hw = W / 2, hh = H / 2, hd = D / 2;
+  const P = (x, y, z) => new THREE.Vector3(x, y, z);
+
+  // 보는 방향 기준 [좌하, 우하, 우상, 좌상]
+  const geo = [
+    { c: [P(-hw,-hh, hd), P( hw,-hh, hd), P( hw, hh, hd), P(-hw, hh, hd)], n: P(0, 0, 1) },   // 앞
+    { c: [P( hw,-hh, hd), P( hw,-hh,-hd), P( hw, hh,-hd), P( hw, hh, hd)], n: P(1, 0, 0) },   // 오른쪽
+    { c: [P( hw,-hh,-hd), P(-hw,-hh,-hd), P(-hw, hh,-hd), P( hw, hh,-hd)], n: P(0, 0,-1) },   // 뒤
+    { c: [P(-hw,-hh,-hd), P(-hw,-hh, hd), P(-hw, hh, hd), P(-hw, hh,-hd)], n: P(-1, 0, 0) },  // 왼쪽
+    { c: [P(-hw, hh, hd), P( hw, hh, hd), P( hw, hh,-hd), P(-hw, hh,-hd)], n: P(0, 1, 0) },   // 윗면 (앞이 아래쪽)
+    { c: [P(-hw,-hh,-hd), P( hw,-hh,-hd), P( hw,-hh, hd), P(-hw,-hh, hd)], n: P(0,-1, 0) },   // 아랫면 (앞이 위쪽)
+  ];
+
+  const widths = firstWide ? [W, D, W, D] : [D, W, D, W];
+  const xs = []; let acc = 0;
+  for (const w of widths) { xs.push(X0 + acc); acc += w; }
+
+  const faces = []; const warns = [];
+  for (let i = 0; i < 4; i++) {
+    const p = (i - front + 4) % 4;                // 이 패널이 실제 박스의 어느 면인지
+    const need = p % 2 === 0 ? W : D;
+    if (Math.abs(widths[i] - need) > 0.01)
+      warns.push(`패널 ${'ABCD'[i]}의 폭(${widths[i]})이 ${FACE_NAMES[p]}면 폭(${need})과 달라요`);
+    faces.push({ phys: p, label: FACE_NAMES[p], color: FACE_COLORS[p], k: 0,
+      rect: { x: xs[i] * pxmm, y: Y0 * pxmm, w: widths[i] * pxmm, h: H * pxmm } });
+  }
+  const lid = (at, isTop, rot) => {
+    const p = (at - front + 4) % 4;
+    const other = p % 2 === 0 ? D : W;
+    const base = isTop ? [0, 3, 2, 1][p] : [0, 1, 2, 3][p];
+    return { phys: isTop ? 4 : 5, label: isTop ? '윗면' : '아랫면', color: FACE_COLORS[isTop ? 4 : 5],
+      k: base + rot,
+      rect: { x: xs[at] * pxmm, y: (isTop ? Y0 - other : Y0 + H) * pxmm, w: widths[at] * pxmm, h: other * pxmm } };
+  };
+  faces.push(lid(topAt, true, topRot), lid(botAt, false, botRot));
+  faces.forEach(f => { f.c = geo[f.phys].c; f.n = geo[f.phys].n; });
+  return { faces, warn: warns.slice(0, 1).join('') };
+}
+
+// ───────── Three.js ─────────
+const canvas = $('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(32, 1, 1, 5000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8a95, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005;
+scene.add(sun); scene.add(sun.target);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.ShadowMaterial({ opacity: 0.25 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0, side: THREE.DoubleSide });
+let mesh = null, tex = null, texCanvas = null, texCtx = null, iw = 1000, ih = 700, srcBitmap = null;
+
+function applyBg() {
+  scene.background = S.transp ? null : new THREE.Color(0xe9e9ee);
+  $('view').style.background = S.transp ? 'repeating-conic-gradient(#ccc 0 25%, #eee 0 50%) 50% / 24px 24px' : '#e9e9ee';
+}
+
+function setImage(src, ref) {
+  srcBitmap = ref || src;      // '전개도 확인' 그림에는 (있으면) 칼선이 보이는 참고 이미지를 씀
+  const w = src.width, h = src.height;
+  if (!texCanvas || texCanvas.width !== w || texCanvas.height !== h) {
+    texCanvas = document.createElement('canvas'); texCanvas.width = w; texCanvas.height = h;
+    texCtx = texCanvas.getContext('2d');
+    if (tex) tex.dispose();
+    tex = new THREE.CanvasTexture(texCanvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    mat.map = tex; mat.needsUpdate = true;
+  }
+  texCtx.clearRect(0, 0, w, h);
+  texCtx.drawImage(src, 0, 0);
+  tex.needsUpdate = true;
+  iw = w; ih = h;
+  rebuild();
+}
+
+function buildGeometry(layout) {
+  const pos = [], nor = [], uv = [], idx = [];
+  const hw = S.W / 2, hh = S.H / 2, hd = S.D / 2;
+  const r = Math.max(0, Math.min(S.round || 0, Math.min(hw, hh, hd) - 0.01));   // 모서리 둥글기(mm)
+  const ix = hw - r, iy = hh - r, iz = hd - r;                                  // 둥글게 하기 전 '안쪽 박스' 반 크기
+  const ins = Math.max(0, S.inset || 0) * S.pxmm;                               // 면 가장자리에서 안쪽으로 자를 픽셀 수
+  const clamp = THREE.MathUtils.clamp;
+  // 면의 한 방향을 나눌 위치(0~1). 둥근 모서리 구간은 촘촘하게, 평평한 가운데는 한 칸
+  const axisT = L => {
+    if (r <= 0) return [0, 1];
+    const K = 6, a = [];
+    for (let j = 0; j <= K; j++) a.push(r * j / K / L);
+    for (let j = 0; j <= K; j++) a.push(1 - r * (K - j) / K / L);
+    return a;
+  };
+  let base = 0;
+  layout.faces.forEach(f => {
+    const { x, y, w, h } = f.rect;
+    const tp = [[x, y + h], [x + w, y + h], [x + w, y], [x, y]];       // 텍스처 픽셀 좌표 [좌하,우하,우상,좌상]
+    const tc = [0, 1, 2, 3].map(i => tp[(i + f.k) % 4]);                // 회전을 반영한 면 모서리별 텍스처 좌표
+    const bl = f.c[0], eS = f.c[1].clone().sub(bl), eT = f.c[3].clone().sub(bl);
+    const ts = axisT(eS.length()), tt = axisT(eT.length());
+    const insS = Math.min(0.2, ins / Math.hypot(tc[1][0] - tc[0][0], tc[1][1] - tc[0][1]));
+    const insT = Math.min(0.2, ins / Math.hypot(tc[3][0] - tc[0][0], tc[3][1] - tc[0][1]));
+    for (let j = 0; j < tt.length; j++) for (let i = 0; i < ts.length; i++) {
+      const s = ts[i], t = tt[j];
+      let p = bl.clone().addScaledVector(eS, s).addScaledVector(eT, t);
+      let n = f.n;
+      if (r > 0) {                                                       // 안쪽 박스에서 r만큼 부풀려 둥근 모서리로
+        const c = new THREE.Vector3(clamp(p.x, -ix, ix), clamp(p.y, -iy, iy), clamp(p.z, -iz, iz));
+        const d = p.clone().sub(c);
+        if (d.lengthSq() > 1e-12) { d.normalize(); p = c.addScaledVector(d, r); n = d; }
+      }
+      const us = insS + s * (1 - 2 * insS), ut = insT + t * (1 - 2 * insT);   // 가장자리 칼선 테두리가 안 들어오게 살짝 안쪽만 사용
+      const u = tc[0][0] + us * (tc[1][0] - tc[0][0]) + ut * (tc[3][0] - tc[0][0]);
+      const v = tc[0][1] + us * (tc[1][1] - tc[0][1]) + ut * (tc[3][1] - tc[0][1]);
+      pos.push(p.x, p.y, p.z); nor.push(n.x, n.y, n.z); uv.push(u / iw, 1 - v / ih);
+    }
+    const nx = ts.length;
+    for (let j = 0; j < tt.length - 1; j++) for (let i = 0; i < nx - 1; i++) {
+      const a = base + j * nx + i, b = a + 1, c2 = a + nx + 1, d2 = a + nx;
+      idx.push(a, b, c2, a, c2, d2);
+    }
+    base += nx * tt.length;
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+function rebuild() {
+  const layout = computeLayout();
+  if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); }
+  mesh = new THREE.Mesh(buildGeometry(layout), mat);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  const m = Math.max(S.W, S.H, S.D);
+  ground.position.y = -S.H / 2 - 0.05;
+  sun.position.set(m * 1.2, m * 2.2, m * 1.6);
+  const sc = sun.shadow.camera; const e = m * 2.2;
+  sc.left = -e; sc.right = e; sc.top = e; sc.bottom = -e; sc.near = 1; sc.far = m * 8; sc.updateProjectionMatrix();
+  $('warn').textContent = layout.warn ? '⚠ ' + layout.warn : '';
+  drawOverlay(layout);
+}
+
+function drawOverlay(layout) {
+  const c = $('ov'), ctx = c.getContext('2d');
+  const sc = 560 / iw; c.width = 560; c.height = Math.max(60, Math.round(ih * sc));
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  if (srcBitmap) ctx.drawImage(srcBitmap, 0, 0, c.width, c.height);
+  ctx.font = '20px sans-serif';
+  layout.faces.forEach(f => {
+    const r = f.rect;
+    ctx.strokeStyle = f.color; ctx.lineWidth = 3;
+    ctx.strokeRect(r.x * sc, r.y * sc, r.w * sc, r.h * sc);
+    ctx.fillStyle = f.color; ctx.globalAlpha = 0.12; ctx.fillRect(r.x * sc, r.y * sc, r.w * sc, r.h * sc); ctx.globalAlpha = 1;
+    ctx.fillStyle = f.color; ctx.fillText(f.label, r.x * sc + 6, r.y * sc + 22);
+  });
+}
+
+// 전개도 확인 그림을 클릭하면 그 지점이 '본체 시작점'(첫 패널 왼쪽 위 모서리)으로 지정됨
+$('ov').addEventListener('click', e => {
+  const c = $('ov'), r = c.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width * iw;
+  const py = (e.clientY - r.top) / r.height * ih;
+  S.X0 = Math.round(px / S.pxmm * 10) / 10;
+  S.Y0 = Math.round(py / S.pxmm * 10) / 10;
+  save(); syncInputs(); rebuild();
+});
+
+function resize() {
+  const v = $('view'); const w = v.clientWidth, h = v.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe($('view'));
+
+function setView(name) {
+  const m = Math.max(S.W, S.H, S.D) * 3.2;
+  const p = { iso: [0.75, 0.55, 1], front: [0, 0, 1], side: [1, 0, 0], top: [0, 1, 0.001] }[name];
+  const v = new THREE.Vector3(...p).normalize().multiplyScalar(m);
+  camera.position.copy(v); controls.target.set(0, 0, 0); controls.update();
+}
+document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+
+(function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+
+// ───────── 파일 감시 ─────────
+let dirHandle = null, lastMod = 0, lastSize = 0;
+const status = t => { $('status').textContent = t; };
+
+$('pick').addEventListener('click', async () => {
+  if (!window.showDirectoryPicker) { alert('폴더 연결은 Chrome에서만 돼요. Chrome으로 열어주세요.'); return; }
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+    aiHandle = null;                     // PNG 폴더 방식을 쓰는 동안 AI 파일 감시는 끔
+    lastMod = 0; lastSize = 0;
+    status(`'${dirHandle.name}' 폴더 연결됨 — preview.png 기다리는 중…`);
+    poll();
+  } catch (e) { /* 취소 */ }
+});
+
+async function poll() {
+  if (!dirHandle) return;
+  try {
+    const fh = await dirHandle.getFileHandle('preview.png');
+    const f = await fh.getFile();
+    if (f.lastModified !== lastMod || f.size !== lastSize) {
+      const bmp = await createImageBitmap(f);      // 쓰는 중인 파일이면 여기서 실패 → 다음 주기에 재시도
+      lastMod = f.lastModified; lastSize = f.size;
+      let abName = null;                           // 스크립트가 같이 기록한 아트보드 이름
+      try {
+        const jh = await dirHandle.getFileHandle('preview.json');
+        abName = JSON.parse(await (await jh.getFile()).text()).name || null;
+      } catch (e) { /* json이 없으면 아트보드 전환 없이 이미지만 갱신 */ }
+      if (abName) switchArtboard(STORE.shared ? '(전체 아트보드 공통)' : abName);
+      setImage(bmp);
+      status('✅ 갱신됨 ' + new Date().toLocaleTimeString('ko-KR'));
+    }
+  } catch (e) {
+    if (e.name === 'NotFoundError') status(`'${dirHandle.name}' 안에 preview.png가 없어요 — 일러스트에서 스크립트를 실행하세요.`);
+  }
+}
+setInterval(poll, 600);
+
+// 드래그&드롭 (1회 반영)
+const drop = $('drop');
+window.addEventListener('dragover', e => { e.preventDefault(); drop.style.display = 'flex'; });
+window.addEventListener('dragleave', e => { if (e.target === document.documentElement || !e.relatedTarget) drop.style.display = 'none'; });
+window.addEventListener('drop', async e => {
+  e.preventDefault(); drop.style.display = 'none';
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  if (/\.(ai|pdf)$/i.test(f.name)) {   // AI/PDF는 한 번만 읽음 (자동 갱신은 'AI 파일 연결' 버튼으로)
+    try { aiHandle = null; await loadAiFile(f); } catch (err) { status('❌ AI 파일을 읽지 못했어요: ' + (err && err.message || err)); }
+    return;
+  }
+  try { setImage(await createImageBitmap(f)); status('✅ 파일 반영됨 (자동 갱신 아님)'); } catch (err) { status('이미지를 읽지 못했어요.'); }
+});
+
+// ───────── AI 파일 직접 읽기 (저장하면 갱신) ─────────
+// .ai 안에는 PDF가 들어 있어서(아트보드 = 페이지) PDF.js로 바로 그립니다. 일러스트에서 내보내기를 할 필요가 없어요.
+// 처음 한 번만 쓰는 '자동 추천' 규칙. 아래 레이어 목록에서 직접 체크하면 그 선택이 저장되어 우선합니다.
+const HIDE_RE = /칼|도무송|톰슨|재단|접지|가이드|다이\s*라인|die\s*-?\s*line|dieline|die\s*cut|guide|fold|crease|cut/i;
+let pdfjsLib = null;
+async function loadPdfjs() {                     // 필요할 때만 불러옴 (실패해도 뷰어 자체는 정상 동작)
+  if (pdfjsLib) return pdfjsLib;
+  const base = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/';
+  const lib = await import(base + 'pdf.min.mjs');
+  lib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.mjs';
+  globalThis.pdfjsWorker = await import(base + 'pdf.worker.min.mjs');   // 별도 워커 없이 화면 안에서 실행
+  return (pdfjsLib = lib);
+}
+
+let aiHandle = null, aiDoc = null, aiCfg = null, aiRefCfg = null, aiPage = 1, aiFileName = '';
+let aiLastMod = 0, aiLastSize = 0, aiSeen = null, aiBusy = false;
+let aiGroups = [];   // 파일 안의 레이어들: { id, name, key, def(파일에서의 기본 보이기 여부) }
+
+async function renderPageTo(page, scale, cfg = aiCfg) {
+  const v = page.getViewport({ scale });
+  const c = document.createElement('canvas');
+  c.width = Math.round(v.width); c.height = Math.round(v.height);
+  const params = { canvasContext: c.getContext('2d'), viewport: v, background: 'white' };
+  if (cfg) params.optionalContentConfigPromise = Promise.resolve(cfg);
+  await page.render(params).promise;
+  return c;
+}
+
+// 숨길 레이어: 직접 고른 목록(STORE.hide)이 있으면 그것, 없으면 이름 규칙으로 추천
+const isHidden = (key, name) => Array.isArray(STORE.hide) ? STORE.hide.includes(key) : HIDE_RE.test(name || '');
+function applyHidden() {
+  if (!aiCfg) return;
+  for (const g of aiGroups) aiCfg.setVisibility(g.id, isHidden(g.key, g.name) ? false : g.def);
+}
+function renderLayerList() {
+  const box = $('layers'); box.innerHTML = '';
+  const hint = t => { const d = document.createElement('div'); d.className = 'hint'; d.textContent = t; box.appendChild(d); };
+  if (!aiGroups.length) { hint('이 파일에는 레이어 정보가 없어요. 위의 "가장자리 안쪽 자르기"로 테두리 칼선을 줄일 수 있어요.'); return; }
+  const seen = new Set();
+  aiGroups.forEach((g, i) => {
+    if (seen.has(g.key)) return; seen.add(g.key);                   // 이름이 같은 레이어는 한 줄로
+    const lab = document.createElement('label'); lab.className = 'chk';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.dataset.key = g.key;
+    cb.checked = isHidden(g.key, g.name);
+    cb.addEventListener('change', onLayerToggle);
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(g.name || `(이름 없음 ${i + 1})`));   // 레이어 이름은 글자로만 표시
+    box.appendChild(lab);
+  });
+  hint('체크한 레이어는 3D에서 숨겨요. 칼선이 들어 있는 레이어를 체크하세요. 선택은 저장돼요.');
+}
+async function onLayerToggle() {
+  const present = new Set(aiGroups.map(g => g.key));
+  const keep = (Array.isArray(STORE.hide) ? STORE.hide : []).filter(k => !present.has(k));   // 다른 파일의 선택은 유지
+  const checked = [...document.querySelectorAll('#layers input[type=checkbox]')].filter(i => i.checked).map(i => i.dataset.key);
+  STORE.hide = keep.concat(checked); save();
+  applyHidden();
+  try { await buildThumbs(); await showAiPage(); status(`레이어 ${checked.length}개 숨김`); }
+  catch (err) { status('❌ 다시 그리지 못했어요: ' + (err && err.message || err)); }
+}
+
+async function buildThumbs() {
+  const box = $('thumbs'); box.innerHTML = '';
+  for (let i = 1; i <= aiDoc.numPages; i++) {
+    const page = await aiDoc.getPage(i);
+    const c = await renderPageTo(page, 0.25);
+    const wrap = document.createElement('div');
+    wrap.className = 'th'; wrap.dataset.p = i; wrap.title = `아트보드 ${i}`;
+    wrap.appendChild(c);
+    const lab = document.createElement('span'); lab.textContent = i; wrap.appendChild(lab);
+    wrap.addEventListener('click', async () => {
+      aiPage = i;
+      try { await showAiPage(); status(`아트보드 ${i}/${aiDoc.numPages} 표시 중 — 저장하면 갱신돼요`); }
+      catch (err) { status('❌ 페이지를 그리지 못했어요: ' + (err && err.message || err)); }
+    });
+    box.appendChild(wrap);
+  }
+}
+function markThumb() {
+  document.querySelectorAll('#thumbs .th').forEach(el => el.classList.toggle('on', Number(el.dataset.p) === aiPage));
+}
+
+async function showAiPage() {
+  const page = await aiDoc.getPage(aiPage);
+  const c = await renderPageTo(page, 2);         // 2px/pt ≈ 5.669px/mm (기본 px/mm 값과 같음)
+  const anyHidden = aiGroups.some(g => isHidden(g.key, g.name));
+  const ref = anyHidden && aiRefCfg ? await renderPageTo(page, 1, aiRefCfg) : null;   // 면 위치 확인용: 칼선이 보이는 그림
+  switchArtboard(STORE.shared ? `${aiFileName} · 전체 아트보드 공통` : `${aiFileName} · 아트보드 ${aiPage}`);
+  setImage(c, ref);
+  markThumb();
+}
+
+async function loadAiFile(file) {
+  const lib = await loadPdfjs();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const doc = await lib.getDocument({ data }).promise;
+  let cfg = null, refCfg = null;
+  const groups = [];
+  try {                                           // 파일 안의 레이어 목록 (칼선 숨기기용)
+    cfg = await doc.getOptionalContentConfig();
+    refCfg = await doc.getOptionalContentConfig();   // 아무것도 숨기지 않은 참고용
+    const gobj = cfg.getGroups() || {};              // pdf.js 4.x: 레이어는 getGroups()로 읽음 (id → 레이어)
+    let n = 0;
+    for (const id of Object.keys(gobj)) {
+      const grp = gobj[id];
+      const name = String(grp.name || '');
+      groups.push({ id, name, key: name || '#' + n, def: grp.visible !== false });
+      n++;
+    }
+  } catch (e) { cfg = null; refCfg = null; groups.length = 0; }
+  if (aiDoc) { try { aiDoc.destroy(); } catch (e) { /* 무시 */ } }
+  aiDoc = doc; aiCfg = cfg; aiRefCfg = refCfg; aiGroups = groups; aiFileName = file.name;
+  if (aiPage > doc.numPages) aiPage = 1;
+  applyHidden();
+  renderLayerList();
+  await buildThumbs();
+  await showAiPage();
+  const hiddenN = new Set(groups.filter(g => isHidden(g.key, g.name)).map(g => g.key)).size;
+  const note = hiddenN ? ` · 레이어 ${hiddenN}개 숨김`
+    : (groups.length ? ' · 숨긴 레이어 없음 — 아래 레이어 목록에서 칼선 레이어를 체크하세요' : ' · 레이어 정보가 없어요');
+  status(`✅ AI 갱신됨 ${new Date().toLocaleTimeString('ko-KR')} — 아트보드 ${aiPage}/${doc.numPages}${note}`);
+}
+
+$('pickAi').addEventListener('click', async () => {
+  if (!window.showOpenFilePicker) { alert('AI 파일 연결은 Chrome에서만 돼요. Chrome으로 열어주세요.'); return; }
+  try {
+    [aiHandle] = await window.showOpenFilePicker({ multiple: false });
+    dirHandle = null;                              // AI 파일 방식을 쓰는 동안 PNG 폴더 감시는 끔
+    aiLastMod = 0; aiLastSize = 0; aiSeen = null;
+    status('AI 파일 읽는 중…');
+    await pollAi(true);
+  } catch (e) { if (e.name !== 'AbortError') status('❌ ' + (e && e.message || e)); }
+});
+
+async function pollAi(force) {
+  if (!aiHandle || aiBusy) return;
+  aiBusy = true;
+  try {
+    const f = await aiHandle.getFile();
+    if (f.lastModified === aiLastMod && f.size === aiLastSize) { aiSeen = null; return; }
+    // 저장 중인 파일을 읽지 않도록, 같은 상태가 두 번 연속 확인될 때 읽음
+    if (!force && !(aiSeen && aiSeen.m === f.lastModified && aiSeen.s === f.size)) {
+      aiSeen = { m: f.lastModified, s: f.size }; status('저장 감지… 곧 갱신해요'); return;
+    }
+    await loadAiFile(f);
+    aiLastMod = f.lastModified; aiLastSize = f.size; aiSeen = null;
+  } catch (e) {
+    status('⚠ AI 파일을 읽지 못했어요 (저장 중일 수 있어요): ' + (e && e.message || e));
+  } finally { aiBusy = false; }
+}
+setInterval(pollAi, 800);
+
+// ───────── PNG 저장 ─────────
+$('snap').addEventListener('click', () => {
+  renderer.render(scene, camera);
+  canvas.toBlob(b => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(b);
+    a.download = `box-mockup-${Date.now()}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }, 'image/png');
+});
+
+// ───────── 시작 ─────────
+(function placeholder() {
+  const c = document.createElement('canvas'); c.width = 1100; c.height = 800;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+  x.fillStyle = '#8b83f0'; x.fillRect(0, 300, c.width, 300);
+  x.fillStyle = '#333'; x.font = '40px sans-serif';
+  x.fillText('preview.png 대기 중 — 일러스트에서 스크립트를 실행하세요', 40, 160);
+  applyBg(); syncInputs(); resize(); setImage(c); setView('iso');
+})();
+</script>
+</body>
+</html>
